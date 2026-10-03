@@ -267,6 +267,44 @@ def test_an_explicit_topic_filter_is_never_replaced_by_the_derived_one(
     assert batches == []
 
 
+def test_iter_batches_empty_selection_returns_without_scanning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An empty channel_ids or empty topics selection must yield nothing
+    immediately without iterating the underlying MCAP reader."""
+    path = tmp_path / "empty_selection.mcap"
+    _write_two_topic_mcap(path, [b"t" * 16], [b"c" * 16])
+
+    with Episode(path) as episode:
+        topics_passed, topics_yielded = _trace_mcap_iter_messages(episode._reader, monkeypatch)
+        assert list(episode._reader.iter_batches(channel_ids=[])) == []
+        assert list(episode._reader.iter_batches(topics=[])) == []
+        assert list(episode._reader.iter_batches(channel_ids=(), topics=None)) == []
+
+    # iter_messages was never called
+    assert topics_passed == []
+    assert topics_yielded == []
+
+
+def test_iter_batches_unknown_channel_ids_on_indexed_file_returns_without_scanning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When an indexed MCAP contains none of the requested channel_ids,
+    iter_batches must return early rather than falling back to an unconstrained
+    scan across unrelated topics."""
+    path = tmp_path / "unknown_channels.mcap"
+    _write_two_topic_mcap(path, [b"t" * 16], [b"c" * 16])
+
+    with Episode(path) as episode:
+        topics_passed, topics_yielded = _trace_mcap_iter_messages(episode._reader, monkeypatch)
+        batches = list(episode._reader.iter_batches(channel_ids=[99999, 88888]))
+        assert batches == []
+
+    # iter_messages was never called
+    assert topics_passed == []
+    assert topics_yielded == []
+
+
 def test_channel_id_read_without_a_summary_falls_back_to_a_full_scan(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
