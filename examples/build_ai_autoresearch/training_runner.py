@@ -28,11 +28,17 @@ def snapshot_training_source(source: Path, trial_directory: Path) -> str:
     return file_sha256(trial_directory / "train.py")
 
 
-def run_worker(command: Sequence[str], trial_directory: Path, budget: TrialBudget) -> None:
+def run_worker(
+    command: Sequence[str],
+    trial_directory: Path,
+    budget: TrialBudget,
+    *,
+    cwd: Path | None = None,
+) -> None:
     with (trial_directory / "training.log").open("xb") as log:
         process_started = time.monotonic()
         process = subprocess.Popen(
-            command, stdout=log, stderr=subprocess.STDOUT, start_new_session=True
+            command, stdout=log, stderr=subprocess.STDOUT, start_new_session=True, cwd=cwd
         )
         startup_deadline = time.monotonic() + budget.startup_seconds
         try:
@@ -60,6 +66,7 @@ def run_worker(command: Sequence[str], trial_directory: Path, budget: TrialBudge
                 )
         finally:
             # Kill the process group even after a worker exits, so spawned children cannot outlive a trial.
-            with suppress(ProcessLookupError):
-                os.killpg(process.pid, signal.SIGKILL)
+            if hasattr(os, "killpg"):
+                with suppress(ProcessLookupError):
+                    os.killpg(process.pid, signal.SIGKILL)
             process.wait()

@@ -28,3 +28,22 @@ def test_worker_completion_and_deadline(overrun: bool, tmp_path: Path) -> None:
     else:
         run_worker([sys.executable, str(worker)], tmp_path, budget)
         assert (tmp_path / "completed").read_text() == "done"
+
+
+def test_worker_respects_custom_working_directory(tmp_path: Path) -> None:
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+    trial = tmp_path / "trial"
+    trial.mkdir()
+    worker = workdir / "worker.py"
+    worker.write_text(
+        "import json, os, time\n"
+        "from pathlib import Path\n"
+        f"output = Path({str(trial)!r})\n"
+        "(output / 'started.tmp').write_text(json.dumps({'started_monotonic': time.monotonic()}))\n"
+        "(output / 'started.tmp').rename(output / 'started.json')\n"
+        "(output / 'cwd.txt').write_text(os.getcwd())\n"
+    )
+    budget = TrialBudget(training_seconds=15.0, reference_reason="working directory fixture")
+    run_worker([sys.executable, "worker.py"], trial, budget, cwd=workdir)
+    assert Path((trial / "cwd.txt").read_text()).resolve() == workdir.resolve()

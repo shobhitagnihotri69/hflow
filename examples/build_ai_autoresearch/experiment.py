@@ -393,6 +393,7 @@ def trial(experiment: Path) -> None:
             ],
             directory,
             protocol.budget,
+            cwd=REPOSITORY_ROOT,
         )
         training = read_record(directory / "outcome.json", WorkerOutcome)
         if (
