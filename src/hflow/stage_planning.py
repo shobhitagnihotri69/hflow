@@ -229,7 +229,7 @@ def _camera_presence_by_episode(
     rows = connection.execute(
         f"""
         SELECT runs.episode_id, count(measurements.key) > 0
-        FROM check_runs AS runs
+        FROM check_runs_latest AS runs
         LEFT JOIN measurements
           ON measurements.episode_id = runs.episode_id
          AND measurements.run_fingerprint = runs.run_fingerprint

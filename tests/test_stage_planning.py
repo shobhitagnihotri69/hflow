@@ -300,6 +300,49 @@ async def added_later(ep: hflow.Episode) -> hflow.CheckResult:
         assert isinstance(second_outstanding, OutstandingStages)
         assert second_outstanding.outstanding_steps == ("flaky_check",)
 
+    def test_camera_presence_reads_latest_run_to_preserve_media_fallback(
+        self, tmp_path: Path, one_second_camera_less_episode: Path
+    ) -> None:
+        """When camera_frame_stats errors on replay, the planner must not consult
+        stale camera-less results from earlier runs to skip Stage.MEDIA."""
+        from hflow.checks import camera_frame_stats
+
+        data_root = tmp_path / "data"
+        episode_path = data_root / EPISODE_URI
+        episode_path.parent.mkdir(parents=True)
+        episode_path.write_bytes(one_second_camera_less_episode.read_bytes())
+        application = hflow.App("camera-presence-planning", data_root=data_root)
+
+        # First run: camera_frame_stats runs on camera-less episode and settles with 0 cameras.
+        first_run = asyncio.run(
+            run_stages_directly(application, [EPISODE_URI], hflow.RUN_PROFILES["full"])
+        )
+        assert _stage(first_run, hflow.Stage.META).counts["processed"] == 1
+        # MEDIA has no work because camera_frame_stats settled with no cameras.
+        first_plan = plan_outstanding_stages(application, [EPISODE_URI], [hflow.Stage.MEDIA])
+        assert first_plan[EPISODE_URI].stages == frozenset()
+
+        async def failing_camera_stats(ep: hflow.Episode) -> hflow.CheckResult:
+            raise RuntimeError("simulated camera check crash")
+
+        # Mock camera_frame_stats to crash on replay
+        camera_check = next(
+            registered
+            for registered in application.checks
+            if registered.function is camera_frame_stats
+        )
+        object.__setattr__(camera_check, "function", failing_camera_stats)
+
+        with pytest.raises(RuntimeError):
+            asyncio.run(run_stages_directly(application, [EPISODE_URI], {hflow.Stage.META}))
+
+        # On replay failure, camera_frame_stats result is missing/errored;
+        # the planner must preserve the safe fallback and schedule Stage.MEDIA.
+        second_plan = plan_outstanding_stages(application, [EPISODE_URI], [hflow.Stage.MEDIA])
+        second_outstanding = second_plan[EPISODE_URI]
+        assert isinstance(second_outstanding, OutstandingStages)
+        assert hflow.Stage.MEDIA in second_outstanding.stages
+
 
 class TestTheEscapeHatches:
     def test_all_stages_re_runs_everything(self, project: Path) -> None:
