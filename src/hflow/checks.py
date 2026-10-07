@@ -2256,7 +2256,7 @@ def _keyframe_interval_value(
         if not inter.keyframe_indices:
             raise ValueError(f"{name!r}: fact named for a keyframe-less camera")
         keyframe_stamps_ns = stamps_ns[list(inter.keyframe_indices)]
-        gaps_ns = np.diff(np.append(keyframe_stamps_ns, stamps_ns[-1]))
+        gaps_ns = np.diff(np.concatenate(([stamps_ns[0]], keyframe_stamps_ns, [stamps_ns[-1]])))
         positive_gaps_ns = gaps_ns[gaps_ns > 0]
         return float(np.max(positive_gaps_ns) / 1e9) if len(positive_gaps_ns) else 0.0
     if name == "median_keyframe_interval_s":

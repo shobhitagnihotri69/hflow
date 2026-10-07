@@ -849,7 +849,7 @@ def test_keyframe_interval_preserves_measurements_with_one_scan_per_camera(
         "/single/compressed/scanned_frame_count": 5,
         "/single/compressed/keyframe_count": 1,
         "/single/compressed/first_frame_is_keyframe": 0,
-        "/single/compressed/max_keyframe_gap_s": 0.0,
+        "/single/compressed/max_keyframe_gap_s": 7.0,
         "/multiple/compressed/scanned_frame_count": 5,
         "/multiple/compressed/keyframe_count": 3,
         "/multiple/compressed/first_frame_is_keyframe": 1,
@@ -887,6 +887,59 @@ def test_keyframe_interval_preserves_measurements_with_one_scan_per_camera(
         assert channel_calls == list(dict.fromkeys(episode.cameras if cameras is None else cameras))
         # App's supersession path asks for keys without precomputed records.
         assert hflow.checks._keyframe_interval_keys(episode, cameras=cameras) == set(expected)
+
+
+def test_keyframe_interval_value_bounds_lead_in_gap_for_mid_gop_stream() -> None:
+    """When a stream starts mid-GOP (first frame is not a keyframe), the
+    lead-in interval between the stream head and the first keyframe must be
+    measured as part of max_keyframe_gap_s.
+    """
+    # 6 frames: t = 0.0s, 1.0s, 2.0s, 3.0s, 4.0s, 5.0s
+    stamps_ns = np.array([0, 1, 2, 3, 4, 5], dtype=np.int64) * 1_000_000_000
+
+    # Case 1: First keyframe is at t = 4.0s (frame 4). Stream ends at t = 5.0s.
+    # Lead-in gap: [0.0s, 4.0s] (4.0s). Tail gap: [4.0s, 5.0s] (1.0s).
+    inter_mid_gop = hflow.checks._KeyframeIntervalPerCamera(frame_count=6, keyframe_indices=(4,))
+    assert (
+        hflow.checks._keyframe_interval_value(
+            "/cam/compressed", "first_frame_is_keyframe", inter_mid_gop, stamps_ns
+        )
+        == 0
+    )
+    assert (
+        hflow.checks._keyframe_interval_value(
+            "/cam/compressed", "max_keyframe_gap_s", inter_mid_gop, stamps_ns
+        )
+        == 4.0
+    )
+
+    # Case 2: Only keyframe is the final frame at t = 5.0s (frame 5).
+    # Whole stream has no seek point until the very end: gap is 5.0s.
+    inter_tail_only = hflow.checks._KeyframeIntervalPerCamera(frame_count=6, keyframe_indices=(5,))
+    assert (
+        hflow.checks._keyframe_interval_value(
+            "/cam/compressed", "max_keyframe_gap_s", inter_tail_only, stamps_ns
+        )
+        == 5.0
+    )
+
+    # Case 3: Canonical stream starting on a keyframe at t = 0.0s (frame 0).
+    # Gaps: [0.0s, 3.0s] (3.0s) and [3.0s, 5.0s] (2.0s). Max is 3.0s.
+    inter_head_keyframe = hflow.checks._KeyframeIntervalPerCamera(
+        frame_count=6, keyframe_indices=(0, 3)
+    )
+    assert (
+        hflow.checks._keyframe_interval_value(
+            "/cam/compressed", "first_frame_is_keyframe", inter_head_keyframe, stamps_ns
+        )
+        == 1
+    )
+    assert (
+        hflow.checks._keyframe_interval_value(
+            "/cam/compressed", "max_keyframe_gap_s", inter_head_keyframe, stamps_ns
+        )
+        == 3.0
+    )
 
 
 def test_fps_conformance_classifies_matching_and_half_rate_streams(tmp_path: Path) -> None:
