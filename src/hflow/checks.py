@@ -504,15 +504,19 @@ def _camera_frame_stats_keys(episode: Episode, *, cameras: Sequence[str] | None 
 
     Per topic: ``message_count`` always; ``expected_frame_count`` and
     ``frame_deficit_pct`` only when the topic carries at least two messages;
-    the eight decoded-evidence keys always. ``camera_instrument`` and
-    ``camera_measurement_definition`` are the two non-topic keys; they ride
-    inside the per-topic selection, so an episode with no cameras emits
-    nothing at all.
+    the eight decoded-evidence keys only when the topic is populated.
+    ``camera_instrument`` and ``camera_measurement_definition`` are the two
+    non-topic keys; they ride inside the per-topic selection, so an episode
+    with no cameras (or only empty cameras) emits neither.
     """
     selected = _resolve_selected_cameras(episode, cameras)
     keys: set[str] = set()
+    populated_cameras = False
     for topic in selected:
         keys.add(f"{topic}/message_count")
+        if episode.channel(topic).timestamps.size == 0:
+            continue
+        populated_cameras = True
         if episode.channel(topic).timestamps.size >= 2:
             keys.add(f"{topic}/expected_frame_count")
             keys.add(f"{topic}/frame_deficit_pct")
@@ -529,7 +533,7 @@ def _camera_frame_stats_keys(episode: Episode, *, cameras: Sequence[str] | None 
                 "luma_avg_max",
             )
         )
-    if selected:
+    if populated_cameras:
         keys.add("camera_instrument")
         keys.add("camera_measurement_definition")
     return keys
@@ -545,7 +549,7 @@ class _CameraIntermediates:
     """
 
     stamps_ns: np.ndarray
-    stats: VideoFrameStatistics
+    stats: VideoFrameStatistics | None
     # None below two messages, mirroring the branches that need a rate.
     expected_frame_count: int | None
 
@@ -562,6 +566,8 @@ def _camera_intermediates(
     bright_luma_threshold: float = 235.0,
 ) -> _CameraIntermediates:
     stamps_ns = episode.channel(topic).timestamps
+    if stamps_ns.size == 0:
+        return _CameraIntermediates(stamps_ns, None, None)
     stats = measure_video_frame_statistics_for_hflow(
         episode.video(topic),
         settings=FrameStatisticsSettings(
@@ -623,10 +629,12 @@ def _camera_value(
                     100.0 * (expected_frame_count - inter.stamps_ns.size) / expected_frame_count
                 )
             case "decoded_frame_count":
+                if inter.stats is None:
+                    raise ValueError(f"{key!r}: no frames decoded on an empty camera topic")
                 return inter.stats.decoded_frame_count
             case "decode_deficit_pct":
                 message_count = inter.stamps_ns.size
-                if message_count == 0:
+                if message_count == 0 or inter.stats is None:
                     raise ValueError(
                         f"{key!r} has no message denominator: decode deficit is undefined "
                         "for an empty camera topic"
@@ -635,25 +643,39 @@ def _camera_value(
                     100.0 * (message_count - inter.stats.decoded_frame_count) / message_count
                 )
             case "black_frame_pct":
+                if inter.stats is None:
+                    raise ValueError(f"{key!r}: no frames decoded on an empty camera topic")
                 return inter.stats.black_frame_percent
             case "overexposed_frame_pct":
+                if inter.stats is None:
+                    raise ValueError(f"{key!r}: no frames decoded on an empty camera topic")
                 return inter.stats.overexposed_frame_percent
             case "freeze_total_s":
+                if inter.stats is None:
+                    raise ValueError(f"{key!r}: no frames decoded on an empty camera topic")
                 return inter.stats.freeze_total_seconds
             case "luma_avg_mean":
+                if inter.stats is None:
+                    raise ValueError(f"{key!r}: no frames decoded on an empty camera topic")
                 return inter.stats.average_luma_mean
             case "luma_avg_min":
+                if inter.stats is None:
+                    raise ValueError(f"{key!r}: no frames decoded on an empty camera topic")
                 return inter.stats.average_luma_minimum
             case "luma_avg_max":
+                if inter.stats is None:
+                    raise ValueError(f"{key!r}: no frames decoded on an empty camera topic")
                 return inter.stats.average_luma_maximum
         raise ValueError(f"camera_frame_stats has no branch for the key {key!r}")
     if name == "camera_instrument":
-        # An explicit check version does not identify the measuring instrument,
-        # and FFmpeg builds can produce different readings. Record the pinned
-        # build so measurements remain interpretable across upgrades. One build
-        # measures every topic in a run, so any computed topic's provenance
-        # answers it.
-        return next(iter(intermediates_by_topic.values())).stats.provenance.ffmpeg_version
+        populated = [
+            inter.stats.provenance.ffmpeg_version
+            for inter in intermediates_by_topic.values()
+            if inter.stats is not None
+        ]
+        if not populated:
+            raise ValueError(f"camera_frame_stats has no branch for the key {key!r}")
+        return populated[0]
     if name == "camera_measurement_definition":
         return FRAME_STATISTICS_DEFINITION_VERSION
     raise ValueError(f"camera_frame_stats has no branch for the key {key!r}")
@@ -757,7 +779,7 @@ def _measure_camera_frame_stats(
     intervals: list[Interval] = []
     for topic in selected_cameras:
         inter = intermediates_by_topic[topic]
-        if inter.stamps_ns.size:
+        if inter.stamps_ns.size and inter.stats is not None:
             # Instrument times are seconds from the MP4 start, which is the
             # camera's first message; map spans back onto the log clock.
             stream_start_ns = int(inter.stamps_ns[0])

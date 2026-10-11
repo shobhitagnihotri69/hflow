@@ -759,6 +759,72 @@ def test_camera_frame_stats_sees_the_injected_black_segment(tmp_path: Path) -> N
     assert isinstance(instrument, str) and "ffmpeg version" in instrument
 
 
+def test_camera_frame_stats_handles_empty_camera_channel(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Issue #718: an episode with a registered but empty camera topic must emit
+    message_count = 0 without crashing on video remux or decode deficit.
+    """
+    from unittest.mock import MagicMock
+
+    # 1. Episode with only an empty camera channel
+    empty_channel = MagicMock()
+    empty_channel.timestamps = np.empty(0, dtype=np.int64)
+
+    ep_empty = MagicMock(spec=hflow.Episode)
+    ep_empty.cameras = ["/empty_cam"]
+    ep_empty.channel.return_value = empty_channel
+
+    keys = hflow.checks._camera_frame_stats_keys(ep_empty)
+    assert keys == {"/empty_cam/message_count"}
+
+    result = hflow.checks._measure_camera_frame_stats(ep_empty)
+    assert result.measurements == {"/empty_cam/message_count": 0}
+    assert result.intervals == []
+
+    # 2. Episode with both populated and empty cameras
+    fake_stats = MagicMock(
+        decoded_frame_count=4,
+        black_frame_percent=0.0,
+        overexposed_frame_percent=0.0,
+        freeze_total_seconds=0.0,
+        average_luma_mean=120.0,
+        average_luma_minimum=80.0,
+        average_luma_maximum=160.0,
+        black_intervals=(),
+        freeze_intervals=(),
+        provenance=MagicMock(ffmpeg_version="fake-ffmpeg"),
+    )
+    monkeypatch.setattr(
+        hflow.checks,
+        "measure_video_frame_statistics_for_hflow",
+        lambda *args, **kwargs: fake_stats,
+    )
+
+    populated_channel = MagicMock()
+    populated_channel.timestamps = np.array([0, 100_000_000, 200_000_000, 300_000_000])
+
+    ep_mixed = MagicMock(spec=hflow.Episode)
+    ep_mixed.cameras = ["/wrist_cam", "/empty_cam"]
+
+    def get_channel(topic: str) -> MagicMock:
+        return populated_channel if topic == "/wrist_cam" else empty_channel
+
+    ep_mixed.channel.side_effect = get_channel
+    ep_mixed.video.return_value = Path("/fake/video.mp4")
+
+    keys_mixed = hflow.checks._camera_frame_stats_keys(ep_mixed)
+    assert "/wrist_cam/decoded_frame_count" in keys_mixed
+    assert "/wrist_cam/decode_deficit_pct" in keys_mixed
+    assert "/empty_cam/message_count" in keys_mixed
+    assert "/empty_cam/decode_deficit_pct" not in keys_mixed
+    assert "camera_instrument" in keys_mixed
+
+    result_mixed = hflow.checks._measure_camera_frame_stats(ep_mixed)
+    assert result_mixed.measurements["/empty_cam/message_count"] == 0
+    assert result_mixed.measurements["/wrist_cam/message_count"] == 4
+    assert result_mixed.measurements["/wrist_cam/decoded_frame_count"] == 4
+    assert result_mixed.measurements["camera_instrument"] == "fake-ffmpeg"
+
+
 def test_media_digest_matches_the_same_footage_under_different_telemetry(
     tmp_path: Path,
 ) -> None:
