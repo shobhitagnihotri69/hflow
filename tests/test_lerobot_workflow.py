@@ -19,6 +19,8 @@ from pathlib import Path
 from typing import cast
 
 import duckdb
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 from lerobot_test_helpers import CorpusEpisodeRow, two_camera_v3_info, write_v3_corpus
 from mcap_test_helpers import write_compressed_video_mcap
@@ -155,7 +157,7 @@ def fixture_archive(tmp_path_factory: pytest.TempPathFactory) -> Path:
                 length=FRAMES,
                 dataset_from_index=index * FRAMES,
                 video_to_timestamp=2.0,
-                tasks=(),
+                tasks=("fixture_task",),
             )
             for index in range(3)
         ],
@@ -165,6 +167,11 @@ def fixture_archive(tmp_path_factory: pytest.TempPathFactory) -> Path:
         video_directory = root / "videos" / camera_key / "chunk-000"
         video_directory.mkdir(parents=True)
         (video_directory / "file-000.mp4").write_bytes(b"fake-mp4-content")
+    tasks_table = pa.Table.from_arrays(
+        [pa.array([0], type=pa.int64()), pa.array(["fixture_task"], type=pa.string())],
+        names=["task_index", "task"],
+    )
+    pq.write_table(tasks_table, root / "meta" / "tasks.parquet")
     return root
 
 
@@ -353,6 +360,13 @@ def test_workflow_end_to_end_on_small_fixture(tmp_path: Path, installed_fake_imp
     )
     assert proc.returncode == 0, proc.stderr
     assert "OK" in proc.stdout
+
+    # Exported task metadata matches the source archive registry.
+    dest_tasks = data_dir / "v3" / "meta" / "tasks.parquet"
+    assert dest_tasks.exists()
+    tasks_table = pq.read_table(str(dest_tasks))
+    assert tasks_table.column("task_index").to_pylist() == [0]
+    assert tasks_table.column("task").to_pylist() == ["fixture_task"]
 
 
 def test_workflow_runs_the_corpus_in_a_given_source_manifest(
